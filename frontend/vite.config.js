@@ -18,4 +18,21 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    chunkSizeWarningLimit: 600,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // Split heavy PDF/canvas libs into their own chunk (lazy-loaded)
+          'pdf-libs': ['jspdf', 'html2canvas'],
+          // Split React + Router core
+          'react-vendor': ['react', 'react-dom', 'react-router-dom'],
+          // Split DnD toolkit
+          'dnd-kit': ['@dnd-kit/core', '@dnd-kit/sortable', '@dnd-kit/utilities'],
+          // Split state management + http
+          'state-vendor': ['zustand', 'axios'],
+        },
+      },
+    },
+  },
 });
