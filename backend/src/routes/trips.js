@@ -10,6 +10,21 @@ import { getSequentialDistances } from '../services/osrmService.js';
 
 const router = express.Router();
 
+/**
+ * PostgREST cannot order deeply-nested resources (trips→trip_days→itinerary_items)
+ * using foreignTable. We sort in JS instead.
+ */
+function sortTripData(trip) {
+  if (!trip || !trip.trip_days) return trip;
+  trip.trip_days.sort((a, b) => a.day_number - b.day_number);
+  trip.trip_days.forEach(day => {
+    if (day.itinerary_items) {
+      day.itinerary_items.sort((a, b) => a.sort_order - b.sort_order);
+    }
+  });
+  return trip;
+}
+
 // ─── GET /api/trips — List user trips ────────────────────────────────────────
 router.get('/', authenticate, async (req, res, next) => {
   try {
@@ -35,16 +50,21 @@ router.get('/:id', authenticate, async (req, res, next) => {
         *,
         trip_days(
           *,
-          itinerary_items(* order by sort_order asc)
+          itinerary_items(*)
         )
       `)
       .eq('id', req.params.id)
       .eq('user_id', req.user.id)
+      .order('day_number', { foreignTable: 'trip_days', ascending: true })
       .single();
 
-    if (error || !trip) return next(createError(404, 'Trip not found.', 'NOT_FOUND'));
+    if (error) {
+      console.error(`[ERROR] GET /api/trips/${req.params.id}:`, error.message);
+      return next(createError(404, 'Trip not found.', 'NOT_FOUND'));
+    }
+    if (!trip) return next(createError(404, 'Trip not found.', 'NOT_FOUND'));
 
-    res.json({ trip });
+    res.json({ trip: sortTripData(trip) });
   } catch (err) {
     next(err);
   }
@@ -258,14 +278,16 @@ router.post('/:id/generate', authenticate, aiRateLimiter, async (req, res, next)
         *,
         trip_days(
           *,
-          itinerary_items(* order by sort_order asc)
+          itinerary_items(*)
         )
       `)
       .eq('id', req.params.id)
       .eq('user_id', req.user.id)
+      .order('day_number', { foreignTable: 'trip_days', ascending: true })
       .single();
 
     if (tripError || !trip) return next(createError(404, 'Trip not found.', 'NOT_FOUND'));
+    sortTripData(trip);
 
     // Prepare days with locked_items for the prompt
     const daysWithLocked = trip.trip_days.map(day => ({
@@ -328,15 +350,16 @@ router.post('/:id/generate', authenticate, aiRateLimiter, async (req, res, next)
         *,
         trip_days(
           *,
-          itinerary_items(* order by sort_order asc)
+          itinerary_items(*)
         )
       `)
       .eq('id', trip.id)
+      .order('day_number', { foreignTable: 'trip_days', ascending: true })
       .single();
 
     res.json({
       message: `AI generated ${itemsToInsert.length} suggestions.`,
-      trip: updatedTrip,
+      trip: sortTripData(updatedTrip),
     });
   } catch (err) {
     next(err);
@@ -460,14 +483,15 @@ router.get('/share/:token', async (req, res, next) => {
         start_date, end_date, traveler_count, travel_style,
         trip_days(
           *,
-          itinerary_items(* order by sort_order asc)
+          itinerary_items(*)
         )
       `)
       .eq('share_token', req.params.token)
+      .order('day_number', { foreignTable: 'trip_days', ascending: true })
       .single();
 
     if (error || !trip) return next(createError(404, 'Shared trip not found.', 'NOT_FOUND'));
-    res.json({ trip });
+    res.json({ trip: sortTripData(trip) });
   } catch (err) {
     next(err);
   }

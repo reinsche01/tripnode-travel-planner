@@ -29,7 +29,7 @@
 Frontend   → React 18 + Vite + Tailwind CSS + dnd-kit + Zustand
 Backend    → Node.js + Express.js
 Database   → Supabase (PostgreSQL) + Auth
-AI         → Google Gemini 1.5 Flash (Structured JSON Output)
+AI         → Google Gemini 3.5 Flash Lite (Structured JSON Output)
 Places     → Google Places API (with Supabase caching)
 Routing    → OSRM (Open Source Routing Machine — free)
 PDF        → jsPDF (client-side)
@@ -43,26 +43,30 @@ PDF        → jsPDF (client-side)
 tripnode/
 ├── backend/
 │   ├── src/
-│   │   ├── index.js              # Express server
-│   │   ├── routes/               # auth, trips, places, routes
-│   │   ├── services/             # geminiService, placesService, osrmService
-│   │   ├── middleware/           # auth, errorHandler, rateLimiter
-│   │   └── utils/                # supabaseClient
+│   │   ├── index.js              # Express server entry point
+│   │   ├── routes/               # auth.js, trips.js, places.js, routes.js
+│   │   ├── services/             # geminiService.js, placesService.js, osrmService.js
+│   │   ├── middleware/           # auth.js, errorHandler.js, rateLimiter.js
+│   │   └── utils/                # supabaseClient.js
 │   ├── db/
-│   │   └── migrations/           # SQL files (001–005)
+│   │   └── migrations/
+│   │       └── 001_initial_schema.sql  # Full schema (all tables, RLS, triggers)
 │   ├── .env.example
 │   └── package.json
 │
 ├── frontend/
 │   ├── src/
-│   │   ├── pages/                # Landing, Login, Signup, Dashboard, Planner, Shared
+│   │   ├── pages/                # LandingPage, LoginPage, SignupPage,
+│   │   │                         # DashboardPage, TripWizardPage,
+│   │   │                         # TripPlannerPage, SharedTripPage
 │   │   ├── components/
-│   │   │   ├── timeline/         # Timeline, TimelineItem
-│   │   │   ├── trip/             # EditItemModal, AddAnchorModal
-│   │   │   └── ui/               # Toast, Skeleton
-│   │   ├── store/                # authStore, tripStore, uiStore (Zustand)
+│   │   │   ├── timeline/         # Timeline.jsx, TimelineItem.jsx
+│   │   │   ├── trip/             # EditItemModal.jsx, AddAnchorModal.jsx
+│   │   │   └── ui/               # Toast.jsx, Skeleton.jsx
+│   │   ├── store/                # authStore.js, tripStore.js, uiStore.js (Zustand)
 │   │   ├── services/             # api.js, supabaseClient.js
-│   │   └── utils/                # pdfExport.js
+│   │   └── utils/                # pdfExport.js (client-side PDF via jsPDF)
+│   ├── public/                   # favicon.svg
 │   ├── .env.example
 │   └── package.json
 │
@@ -71,8 +75,8 @@ tripnode/
 │   ├── backend-features.md
 │   └── frontend-features.md
 │
-├── worksteps.md                  # Development guide
-├── preparation.md                # API keys & setup guide
+├── worksteps.md                  # Development workflow & deployment guide
+├── preparation.md                # API keys & service setup guide
 └── .gitignore
 ```
 
@@ -99,22 +103,23 @@ cd ../frontend && npm install
 # Backend
 cd backend
 cp .env.example .env
-# → Fill in SUPABASE_URL, SUPABASE_SERVICE_KEY, GOOGLE_PLACES_API_KEY, GEMINI_API_KEY
+# → Fill in: SUPABASE_URL, SUPABASE_SERVICE_KEY, GOOGLE_PLACES_API_KEY,
+#            GOOGLE_GEMINI_API_KEY, JWT_SECRET
 
 # Frontend
 cd ../frontend
 cp .env.example .env
-# → Fill in VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY
+# → Fill in: VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY, VITE_API_URL
 ```
 
 ### 3. Set Up Supabase Database
 
-In Supabase dashboard → SQL Editor, run these files **in order**:
-1. `backend/db/migrations/001_create_users.sql`
-2. `backend/db/migrations/002_create_trips.sql`
-3. `backend/db/migrations/003_create_trip_days.sql`
-4. `backend/db/migrations/004_create_itinerary_items.sql`
-5. `backend/db/migrations/005_create_places_cache.sql`
+In Supabase dashboard → SQL Editor, run the following script:
+
+```
+backend/db/migrations/001_initial_schema.sql
+```
+This file creates all tables, RLS policies, indexes, and triggers in one shot.
 
 ### 4. Run Locally
 
@@ -134,12 +139,12 @@ npm run dev
 
 ## 🔑 Required API Keys
 
-| Service | Where to Get | Used For |
-|---------|-------------|---------|
-| **Supabase** | [supabase.com](https://supabase.com) | DB + Auth |
-| **Gemini API** | [aistudio.google.com](https://aistudio.google.com) | AI itinerary generation |
-| **Google Places** | [console.cloud.google.com](https://console.cloud.google.com) | Place data + geocoding |
-| **OSRM** | Free public server | Route distances (no key needed) |
+| Service | Env Variable | Where to Get | Used For |
+|---------|-------------|-------------|---------|
+| **Supabase** | `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` | [supabase.com](https://supabase.com) | DB + Auth |
+| **Google Gemini** | `GOOGLE_GEMINI_API_KEY` | [aistudio.google.com](https://aistudio.google.com) | AI itinerary generation |
+| **Google Places** | `GOOGLE_PLACES_API_KEY` | [console.cloud.google.com](https://console.cloud.google.com) | Place data + geocoding |
+| **OSRM** | *(none)* | Free public server | Route distances (no key needed) |
 
 See [`preparation.md`](./preparation.md) for step-by-step API key acquisition.
 

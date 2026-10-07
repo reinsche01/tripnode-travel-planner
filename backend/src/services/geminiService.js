@@ -1,121 +1,131 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+﻿import { GoogleGenAI } from '@google/genai';
 import { searchPlace, isCurrentlyOpen } from './placesService.js';
 import { getSequentialDistances } from './osrmService.js';
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-
 /**
- * JSON schema for Gemini structured output.
+ * Robustly extract a JSON object from a model response string.
  */
-const ITINERARY_SCHEMA = {
-  type: 'object',
-  properties: {
-    days: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          day_number: { type: 'integer' },
-          date: { type: 'string', description: 'YYYY-MM-DD format' },
-          suggested_items: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                name: { type: 'string' },
-                category: {
-                  type: 'string',
-                  enum: ['food', 'culture', 'nature', 'shopping', 'entertainment', 'wellness'],
-                },
-                start_time: { type: 'string', description: 'HH:MM format' },
-                end_time: { type: 'string', description: 'HH:MM format' },
-                duration_minutes: { type: 'integer' },
-                search_query: {
-                  type: 'string',
-                  description: 'Specific search query for Google Places API',
-                },
-                notes: { type: 'string' },
-                why_recommended: { type: 'string', description: 'Brief reason for recommendation' },
-              },
-              required: ['name', 'category', 'start_time', 'end_time', 'duration_minutes', 'search_query'],
-            },
-          },
-        },
-        required: ['day_number', 'date', 'suggested_items'],
-      },
-    },
-  },
-  required: ['days'],
-};
+function extractJSON(text) {
+  if (!text) return null;
+  try { return JSON.parse(text.trim()); } catch { }
+  const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenceMatch) {
+    try { return JSON.parse(fenceMatch[1].trim()); } catch { }
+  }
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start !== -1 && end > start) {
+    try { return JSON.parse(text.slice(start, end + 1)); } catch { }
+  }
+  return null;
+}
 
 /**
- * Generate AI-powered itinerary suggestions to fill empty time slots.
- * This is the core "Fill-the-Blank" feature.
- *
- * @param {Object} tripData - Full trip object with days and locked items
- * @returns {Promise<Array>} Array of enriched itinerary items ready to save
+ * Call Google Gemini API, falling back through modelQueue on failure.
+ */
+async function callGemini(systemPrompt, userPrompt, modelQueue) {
+  const apiKey = process.env.GOOGLE_GEMINI_API_KEY;
+  if (!apiKey) throw new Error('GOOGLE_GEMINI_API_KEY is not set in environment variables.');
+  const ai = new GoogleGenAI({ apiKey });
+  let lastError;
+
+  for (const modelName of modelQueue) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        console.log(`[Gemini] Trying model: ${modelName} (attempt ${attempt})`);
+        const response = await ai.models.generateContent({
+          model: modelName,
+          contents: userPrompt,
+          config: {
+            systemInstruction: systemPrompt,
+            responseMimeType: 'application/json',
+            temperature: 0.7,
+            maxOutputTokens: 8192,
+          },
+        });
+        const text = response.text;
+        if (!text) throw new Error('Gemini returned empty content.');
+        const parsed = extractJSON(text);
+        if (!parsed) {
+          console.error('[Gemini] Could not extract JSON. Raw (300 chars):', text.slice(0, 300));
+          throw new Error('Gemini returned invalid JSON.');
+        }
+        console.log(`[Gemini] Success with model: ${modelName}`);
+        return parsed;
+      } catch (err) {
+        lastError = err;
+        const msg = err.message || '';
+        const isUnavailable = msg.includes('not found') || msg.includes('404') ||
+          msg.includes('does not exist') || msg.includes('PERMISSION_DENIED') ||
+          msg.includes('not supported') || msg.includes('invalid model') ||
+          msg.includes('no longer available');
+        const isOverloaded = msg.includes('503') || msg.includes('overloaded') ||
+          msg.includes('RESOURCE_EXHAUSTED') || msg.includes('429') || msg.includes('quota') ||
+          msg.includes('high demand');
+        if (isUnavailable) {
+          console.warn(`[Gemini] Model ${modelName} unavailable -> trying next...`);
+          break;
+        }
+        if (isOverloaded && attempt < 3) {
+          const wait = attempt * 5000; // 5s, 10s
+          console.warn(`[Gemini] Model ${modelName} busy — retrying in ${wait / 1000}s... (${attempt}/3)`);
+          await new Promise(res => setTimeout(res, wait));
+        } else {
+          console.warn(`[Gemini] Model ${modelName} failed (${msg.slice(0, 80)}) -> next...`);
+          break;
+        }
+      }
+    }
+  }
+  throw lastError || new Error('All Gemini models are currently unavailable.');
+}
+
+/**
+ * Generate AI-powered itinerary suggestions.
  */
 export async function generateItinerary(tripData) {
   const {
-    destination_city,
-    destination_country,
-    travel_style,
-    traveler_count,
-    hotel_name,
-    hotel_lat,
-    hotel_lng,
-    trip_days,
+    destination_city, destination_country, travel_style,
+    traveler_count, hotel_name, hotel_lat, hotel_lng, trip_days,
   } = tripData;
 
-  // 1. Build the prompt
   const prompt = buildPrompt({
-    city: destination_city,
-    country: destination_country,
-    style: travel_style,
-    travelers: traveler_count,
-    hotelName: hotel_name,
-    hotelLat: hotel_lat,
-    hotelLng: hotel_lng,
+    city: destination_city, country: destination_country,
+    style: travel_style, travelers: traveler_count,
+    hotelName: hotel_name, hotelLat: hotel_lat, hotelLng: hotel_lng,
     days: trip_days,
   });
 
-  console.log('[Gemini] Sending prompt for trip to:', destination_city);
+  console.log('[AI] Generating itinerary for:', destination_city, 'via Google Gemini API');
 
-  // 2. Call Gemini with structured output
-  const model = genAI.getGenerativeModel({
-    model: 'gemini-1.5-flash',
-    generationConfig: {
-      responseMimeType: 'application/json',
-      responseSchema: ITINERARY_SCHEMA,
-      temperature: 0.7,
-      maxOutputTokens: 4096,
-    },
-  });
+  const primaryModel = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+  const fallbackRaw = process.env.GEMINI_FALLBACK_MODELS || 'gemini-1.5-flash-8b,gemini-2.0-flash';
+  const modelQueue = [primaryModel, ...fallbackRaw.split(',').map(m => m.trim()).filter(m => m !== primaryModel)];
 
-  const result = await model.generateContent(prompt);
-  const rawJson = result.response.text();
+  const systemPrompt = `You are an expert travel planner. Always respond with valid JSON only — no markdown, no explanation, just the raw JSON object matching the structure: { "days": [ { "day_number": 1, "date": "YYYY-MM-DD", "suggested_items": [ { "name": "...", "category": "food|culture|nature|shopping|entertainment|wellness", "start_time": "HH:MM", "end_time": "HH:MM", "duration_minutes": 90, "search_query": "...", "notes": "...", "why_recommended": "..." } ] } ] }`;
 
   let parsed;
   try {
-    parsed = JSON.parse(rawJson);
-  } catch {
-    throw new Error('Gemini returned invalid JSON. Please try again.');
+    parsed = await callGemini(systemPrompt, prompt, modelQueue);
+  } catch (err) {
+    throw new Error(`AI generation failed: ${err.message}`);
   }
 
-  // 3. Enrich each suggested item with Places data + validate hours
+  if (!parsed.days || !Array.isArray(parsed.days)) {
+    throw new Error('AI returned unexpected structure. Expected { days: [...] }.');
+  }
+
+  // Enrich each item with Places data
   const enrichedDays = await Promise.all(
     parsed.days.map(async (day) => {
       const enrichedItems = await Promise.all(
         day.suggested_items.map(async (item) => {
           try {
             const placeData = await searchPlace(item.search_query, hotel_lat, hotel_lng);
-
-            // Skip places that are closed at the suggested time
             if (placeData?.opening_hours && !isCurrentlyOpen(placeData.opening_hours)) {
               console.warn(`[Gemini] Skipping closed place: ${item.name}`);
               return null;
             }
-
             return {
               ...item,
               place_id: placeData?.google_place_id || null,
@@ -129,36 +139,25 @@ export async function generateItinerary(tripData) {
             };
           } catch (err) {
             console.error(`[Gemini] Failed to enrich item "${item.name}":`, err.message);
-            return {
-              ...item,
-              status: 'suggested',
-              type: 'suggested',
-            };
+            return { ...item, status: 'suggested', type: 'suggested' };
           }
         })
       );
-
-      // Filter out null (closed/invalid) items
-      const validItems = enrichedItems.filter(Boolean);
-
       return {
         day_number: day.day_number,
         date: day.date,
-        suggested_items: validItems,
+        suggested_items: enrichedItems.filter(Boolean),
       };
     })
   );
 
-  // 4. Calculate route distances for each day
+  // Calculate route distances for each day
   const enrichedWithDistances = await Promise.all(
     enrichedDays.map(async (day) => {
-      // Find hotel + locked items for this day
       const dayLocked = trip_days.find(d => d.day_number === day.day_number);
       const allItems = [...(dayLocked?.locked_items || []), ...day.suggested_items];
-
       const coordsWithData = allItems.filter(i => i.lat && i.lng);
       if (coordsWithData.length < 2) return day;
-
       try {
         const distances = await getSequentialDistances(coordsWithData);
         const itemsWithDistances = day.suggested_items.map((item, idx) => ({
@@ -185,16 +184,14 @@ function buildPrompt({ city, country, style, travelers, hotelName, hotelLat, hot
     luxury: 'premium experiences, fine dining, 5-star spas, exclusive tours, private transfers',
     family: 'family-friendly activities, kid-safe venues, educational attractions, manageable distances',
   };
-
   const styleGuide = travelStyleGuide[style] || travelStyleGuide.leisure;
 
   const lockedItemsText = days.map(day => {
     const locked = day.locked_items?.length
       ? day.locked_items.map(item =>
-          `  - [LOCKED] ${item.start_time}–${item.end_time}: ${item.name} at ${item.address || 'address TBD'}`
-        ).join('\n')
+        `  - [LOCKED] ${item.start_time}-${item.end_time}: ${item.name} at ${item.address || 'address TBD'}`
+      ).join('\n')
       : '  (No locked items — fill the entire day)';
-
     return `Day ${day.day_number} (${day.date}):\n${locked}`;
   }).join('\n\n');
 
@@ -205,22 +202,21 @@ TRIP CONTEXT:
 - Destination: ${city}, ${country}
 - Travel Style: ${style} (${styleGuide})
 - Travelers: ${travelers} person(s)
-- Hotel (home base / gravity center): ${hotelName}
+- Hotel (home base): ${hotelName}
 - Hotel Coordinates: ${hotelLat}, ${hotelLng}
 
-LOCKED SCHEDULE (DO NOT modify or suggest alternatives to these):
+LOCKED SCHEDULE (DO NOT modify):
 ${lockedItemsText}
 
 YOUR TASK:
-Fill ONLY the empty time slots between the LOCKED items above with recommended places.
-- Keep all suggestions geographically close to the hotel (within 15–20 km, or on the way to locked items)
-- Suggest places appropriate for the travel style: ${style}
-- Include a mix of: meals (breakfast/lunch/dinner), attractions, and experiences
-- Do not suggest anything that would conflict with locked timings
-- Ensure realistic travel times between consecutive places
-- Suggest popular, well-reviewed places with a good chance of being found on Google Maps
-- For "search_query", provide a specific, Googleable search term (e.g., "Seminyak Beach Bali" not just "beach")
+Fill ONLY the empty time slots between LOCKED items with recommended places.
+- Keep suggestions within 15-20 km of the hotel
+- Match the travel style: ${style}
+- Include meals (breakfast/lunch/dinner), attractions, and experiences
+- Do not conflict with locked timings
+- Ensure realistic travel times between places
+- Use specific, Googleable search_query values (e.g., "Seminyak Beach Bali" not just "beach")
 
-Return a JSON response filling in SUGGESTED items only for each day.
+Return a JSON response with SUGGESTED items only for each day.
 `.trim();
 }

@@ -2,51 +2,67 @@ import { create } from 'zustand';
 import { supabase } from '../services/supabaseClient';
 import api from '../services/api';
 
-export const useAuthStore = create((set) => ({
-  user: null,
-  isLoading: true,
+// Read token synchronously on module load — no async delay
+const storedToken = localStorage.getItem('tripnode_token');
+const storedUser = (() => {
+  try { return JSON.parse(localStorage.getItem('tripnode_user') || 'null'); }
+  catch { return null; }
+})();
 
-  // Initialize: check if there's an existing session
+export const useAuthStore = create((set, get) => ({
+  // Pre-populate from localStorage so ProtectedRoute never flashes login on refresh
+  user: storedUser,
+  token: storedToken,
+  // Only show loading spinner if we have a token but not yet validated
+  isLoading: !!storedToken && !storedUser,
+
+  // ── Called once at app boot to validate existing session ─────────────────
   init: async () => {
-    set({ isLoading: true });
+    const { token } = get();
+    if (!token) {
+      set({ isLoading: false });
+      return;
+    }
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.access_token) {
-        localStorage.setItem('tripnode_token', session.access_token);
-        const { data } = await api.get('/auth/me');
-        set({ user: data.user, isLoading: false });
-      } else {
-        localStorage.removeItem('tripnode_token');
-        set({ user: null, isLoading: false });
-      }
+      // Verify token is still valid against backend
+      const { data } = await api.get('/auth/me');
+      localStorage.setItem('tripnode_user', JSON.stringify(data.user));
+      set({ user: data.user, isLoading: false });
     } catch {
-      set({ user: null, isLoading: false });
+      // Token expired or invalid — clear everything
+      localStorage.removeItem('tripnode_token');
+      localStorage.removeItem('tripnode_user');
+      set({ user: null, token: null, isLoading: false });
     }
   },
 
   login: async (email, password) => {
     const { data } = await api.post('/auth/login', { email, password });
     localStorage.setItem('tripnode_token', data.token);
-    set({ user: data.user });
+    localStorage.setItem('tripnode_user', JSON.stringify(data.user));
+    set({ user: data.user, token: data.token });
     return data;
   },
 
   signup: async (email, password, name) => {
     const { data } = await api.post('/auth/signup', { email, password, name });
     localStorage.setItem('tripnode_token', data.token);
-    set({ user: data.user });
+    localStorage.setItem('tripnode_user', JSON.stringify(data.user));
+    set({ user: data.user, token: data.token });
     return data;
   },
 
   logout: async () => {
-    try {
-      await api.post('/auth/logout');
-    } finally {
-      localStorage.removeItem('tripnode_token');
-      set({ user: null });
-    }
+    try { await api.post('/auth/logout'); } catch { /* ignore */ }
+    localStorage.removeItem('tripnode_token');
+    localStorage.removeItem('tripnode_user');
+    set({ user: null, token: null });
+  },
+
+  // Update user profile data in memory + localStorage
+  setUser: (user) => {
+    localStorage.setItem('tripnode_user', JSON.stringify(user));
+    set({ user });
   },
 }));
 
-// Initialize auth state on app load
-useAuthStore.getState().init();
