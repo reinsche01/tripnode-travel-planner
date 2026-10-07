@@ -1,4 +1,4 @@
-﻿import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI } from '@google/genai';
 import { searchPlace, isCurrentlyOpen } from './placesService.js';
 import { getSequentialDistances } from './osrmService.js';
 
@@ -102,7 +102,7 @@ export async function generateItinerary(tripData) {
   const fallbackRaw = process.env.GEMINI_FALLBACK_MODELS || 'gemini-1.5-flash-8b,gemini-2.0-flash';
   const modelQueue = [primaryModel, ...fallbackRaw.split(',').map(m => m.trim()).filter(m => m !== primaryModel)];
 
-  const systemPrompt = `You are an expert travel planner. Always respond with valid JSON only — no markdown, no explanation, just the raw JSON object matching the structure: { "days": [ { "day_number": 1, "date": "YYYY-MM-DD", "suggested_items": [ { "name": "...", "category": "food|culture|nature|shopping|entertainment|wellness", "start_time": "HH:MM", "end_time": "HH:MM", "duration_minutes": 90, "search_query": "...", "notes": "...", "why_recommended": "..." } ] } ] }`;
+  const systemPrompt = `You are an expert travel planner. Always respond with valid JSON only — no markdown, no explanation, just the raw JSON object matching the structure: { "days": [ { "day_number": 1, "date": "YYYY-MM-DD", "suggested_items": [ { "name": "...", "category": "food|culture|nature|shopping|entertainment|wellness", "start_time": "HH:MM", "end_time": "HH:MM", "duration_minutes": 90, "approx_lat": 48.8584, "approx_lng": 2.2945, "address": "...", "search_query": "...", "notes": "...", "why_recommended": "..." } ] } ] }`;
 
   let parsed;
   try {
@@ -115,23 +115,29 @@ export async function generateItinerary(tripData) {
     throw new Error('AI returned unexpected structure. Expected { days: [...] }.');
   }
 
-  // Enrich each item with Places data
+  // Enrich each item with Places data (with fallback to AI coordinates if Places API fails or key is invalid)
   const enrichedDays = await Promise.all(
     parsed.days.map(async (day) => {
       const enrichedItems = await Promise.all(
         day.suggested_items.map(async (item) => {
           try {
             const placeData = await searchPlace(item.search_query, hotel_lat, hotel_lng);
-            if (placeData?.opening_hours && !isCurrentlyOpen(placeData.opening_hours)) {
-              console.warn(`[Gemini] Skipping closed place: ${item.name}`);
-              return null;
+            const lat = placeData?.lat ?? (typeof item.approx_lat === 'number' ? item.approx_lat : null);
+            const lng = placeData?.lng ?? (typeof item.approx_lng === 'number' ? item.approx_lng : null);
+            const address = placeData?.address || item.address || `${item.name}, ${destination_city}`;
+
+            if (!placeData) {
+              console.warn(`[Places] No Google result for "${item.search_query}" — using fallback coords: lat=${lat}, lng=${lng}`);
+            } else {
+              console.log(`[Places] Found "${item.name}": lat=${placeData.lat}, lng=${placeData.lng}`);
             }
+
             return {
               ...item,
-              place_id: placeData?.google_place_id || null,
-              lat: placeData?.lat || null,
-              lng: placeData?.lng || null,
-              address: placeData?.address || null,
+              place_id: placeData?.place_id || null,
+              lat,
+              lng,
+              address,
               photo_url: placeData?.photo_url || null,
               rating: placeData?.rating || null,
               status: 'suggested',
@@ -139,10 +145,21 @@ export async function generateItinerary(tripData) {
             };
           } catch (err) {
             console.error(`[Gemini] Failed to enrich item "${item.name}":`, err.message);
-            return { ...item, status: 'suggested', type: 'suggested' };
+            const fallbackLat = typeof item.approx_lat === 'number' ? item.approx_lat : null;
+            const fallbackLng = typeof item.approx_lng === 'number' ? item.approx_lng : null;
+            return {
+              ...item,
+              lat: fallbackLat,
+              lng: fallbackLng,
+              address: item.address || `${item.name}, ${destination_city}`,
+              status: 'suggested',
+              type: 'suggested',
+            };
           }
         })
       );
+      const withCoords = enrichedItems.filter(i => i?.lat && i?.lng).length;
+      console.log(`[OSRM] Day ${day.day_number}: ${withCoords}/${enrichedItems.length} items have coordinates`);
       return {
         day_number: day.day_number,
         date: day.date,
@@ -152,26 +169,72 @@ export async function generateItinerary(tripData) {
   );
 
   // Calculate route distances for each day
+  // Build a unified ordered list: [locked items, ...suggested],
+  // call OSRM once, then map each suggested item back to its sequential distance.
   const enrichedWithDistances = await Promise.all(
     enrichedDays.map(async (day) => {
       const dayLocked = trip_days.find(d => d.day_number === day.day_number);
-      const allItems = [...(dayLocked?.locked_items || []), ...day.suggested_items];
-      const coordsWithData = allItems.filter(i => i.lat && i.lng);
-      if (coordsWithData.length < 2) return day;
+      const lockedItems = (dayLocked?.locked_items || []).filter(i => i.lat && i.lng);
+      const suggestedWithCoords = day.suggested_items.filter(i => i.lat && i.lng);
+
+      // Full ordered sequence for this day: locked first (sorted by start_time), then suggested
+      const orderedSequence = [
+        ...lockedItems.sort((a, b) => (a.start_time || '').localeCompare(b.start_time || '')),
+        ...suggestedWithCoords,
+      ];
+
+      console.log(`[OSRM] Day ${day.day_number}: orderedSequence has ${orderedSequence.length} items with coords`);
+
+      if (orderedSequence.length < 2) {
+        console.warn(`[OSRM] Day ${day.day_number}: not enough coords for OSRM (${orderedSequence.length}), using haversine fallback`);
+        // Haversine fallback: straight-line distance between consecutive items
+        let seqIdx = lockedItems.length;
+        const itemsWithHaversine = day.suggested_items.map((item) => {
+          if (!item.lat || !item.lng) return { ...item, distance_from_prev_km: null };
+          const prev = orderedSequence[seqIdx - 1] || null;
+          const dist = prev ? haversineKm(prev.lat, prev.lng, item.lat, item.lng) : 0;
+          seqIdx++;
+          return { ...item, distance_from_prev_km: dist };
+        });
+        return { ...day, suggested_items: itemsWithHaversine };
+      }
+
       try {
-        const distances = await getSequentialDistances(coordsWithData);
-        const itemsWithDistances = day.suggested_items.map((item, idx) => ({
-          ...item,
-          distance_from_prev_km: distances[idx]?.distanceKm || 0,
-        }));
+        const distances = await getSequentialDistances(orderedSequence);
+        console.log(`[OSRM] Day ${day.day_number}: distances =`, distances.map(d => d.distanceKm));
+
+        // Map distances back to ALL suggested items (not just those with coords)
+        let seqIdx = lockedItems.length; // suggested items start after locked in orderedSequence
+        const itemsWithDistances = day.suggested_items.map((item) => {
+          if (!item.lat || !item.lng) {
+            return { ...item, distance_from_prev_km: null };
+          }
+          const dist = distances[seqIdx]?.distanceKm ?? null;
+          seqIdx++;
+          return { ...item, distance_from_prev_km: dist };
+        });
+
         return { ...day, suggested_items: itemsWithDistances };
-      } catch {
+      } catch (err) {
+        console.warn(`[OSRM] Distance calculation failed for day ${day.day_number}:`, err.message);
         return day;
       }
     })
   );
 
   return enrichedWithDistances;
+}
+
+/**
+ * Haversine formula — straight-line distance between two lat/lng points in km.
+ */
+function haversineKm(lat1, lng1, lat2, lng2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2
+    + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+  return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) * 10) / 10;
 }
 
 /**
@@ -216,6 +279,7 @@ Fill ONLY the empty time slots between LOCKED items with recommended places.
 - Do not conflict with locked timings
 - Ensure realistic travel times between places
 - Use specific, Googleable search_query values (e.g., "Seminyak Beach Bali" not just "beach")
+- Provide realistic approximate coordinates ("approx_lat" and "approx_lng" as numbers) and realistic "address" for each venue in ${city}
 
 Return a JSON response with SUGGESTED items only for each day.
 `.trim();

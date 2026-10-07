@@ -63,10 +63,12 @@ export default function Timeline({ items, onReorder, onEdit, onRemove }) {
     const oldIndex = items.findIndex(i => i.id === active.id);
     const newIndex = items.findIndex(i => i.id === over.id);
 
-    // Prevent dragging before locked items at position 0 (hotel/anchors)
-    if (newIndex < items.filter(i => i.status === 'locked').length) return;
-
     const reordered = arrayMove(items, oldIndex, newIndex);
+
+    // Prevent dropping a suggested item before a locked/hotel item
+    const targetItem = items[newIndex];
+    if (targetItem && (targetItem.status === 'locked' || targetItem.type === 'hotel')) return;
+
     onReorder(reordered);
   }
 

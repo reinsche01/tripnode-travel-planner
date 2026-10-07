@@ -341,6 +341,35 @@ router.post('/:id/generate', authenticate, aiRateLimiter, async (req, res, next)
 
     if (itemsToInsert.length > 0) {
       await supabase.from('itinerary_items').insert(itemsToInsert);
+
+      // Recalculate distances per day after insert (in case OSRM skipped due to missing coords earlier)
+      const affectedDayIds = [...new Set(itemsToInsert.map(i => i.trip_day_id))];
+      await Promise.all(
+        affectedDayIds.map(async (dayId) => {
+          const { data: dayItems } = await supabase
+            .from('itinerary_items')
+            .select('id, lat, lng, sort_order')
+            .eq('trip_day_id', dayId)
+            .order('sort_order', { ascending: true });
+
+          const coordItems = (dayItems || []).filter(i => i.lat && i.lng);
+          if (coordItems.length < 2) return;
+
+          try {
+            const distances = await getSequentialDistances(coordItems);
+            await Promise.all(
+              coordItems.map((item, idx) =>
+                supabase
+                  .from('itinerary_items')
+                  .update({ distance_from_prev_km: distances[idx]?.distanceKm ?? 0 })
+                  .eq('id', item.id)
+              )
+            );
+          } catch (err) {
+            console.warn('[OSRM] Post-insert distance calc failed:', err.message);
+          }
+        })
+      );
     }
 
     // Return updated full trip

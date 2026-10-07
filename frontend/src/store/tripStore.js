@@ -74,7 +74,9 @@ export const useTripStore = create((set, get) => ({
 
   reorderItems: async (tripId, dayId, items) => {
     await api.put(`/trips/${tripId}/reorder`, { day_id: dayId, items });
-    // Update local state optimistically (already done by dnd-kit before API call)
+    // Refresh full trip so recalculated distances appear in UI
+    const { data } = await api.get(`/trips/${tripId}`);
+    set({ currentTrip: data.trip });
   },
 
   updateItem: async (tripId, itemId, updates) => {

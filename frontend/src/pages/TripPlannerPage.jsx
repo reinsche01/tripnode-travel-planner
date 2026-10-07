@@ -55,12 +55,10 @@ export default function TripPlannerPage() {
   };
 
   const handleReorder = async (reorderedItems) => {
-    // Optimistically update UI via store would be ideal; here we call API
     const itemsWithOrder = reorderedItems.map((item, idx) => ({ id: item.id, sort_order: idx }));
     try {
       await reorderItems(id, currentDay.id, itemsWithOrder);
-      // Refresh trip to get updated distances
-      fetchTrip(id);
+      // reorderItems already refreshes currentTrip with updated distances
     } catch {
       showToast('Failed to save new order.', 'error');
     }
@@ -257,17 +255,22 @@ export default function TripPlannerPage() {
             )}
 
             {/* Day stats footer */}
-            {currentItems.length > 0 && (
-              <div className="mt-4 p-3 bg-surface-subtle rounded-xl flex flex-wrap gap-4 text-xs text-ink-muted">
-                <span>📍 {currentItems.length} places</span>
-                <span>
-                  🚗 Total: {currentItems.reduce((sum, i) => sum + (i.distance_from_prev_km || 0), 0).toFixed(1)} km
-                </span>
-                <span>
-                  ⏱️ {currentItems.filter(i => i.duration_minutes).reduce((sum, i) => sum + (i.duration_minutes || 0), 0)} min of activities
-                </span>
-              </div>
-            )}
+            {currentItems.length > 0 && (() => {
+              const totalKm = currentItems.reduce((sum, i) => sum + (i.distance_from_prev_km || 0), 0);
+              const totalMin = currentItems.filter(i => i.duration_minutes).reduce((sum, i) => sum + (i.duration_minutes || 0), 0);
+              const hasDistanceData = currentItems.some(i => i.distance_from_prev_km > 0);
+              return (
+                <div className="mt-4 p-3 bg-surface-subtle rounded-xl flex flex-wrap gap-4 text-xs text-ink-muted">
+                  <span>📍 {currentItems.length} places</span>
+                  <span>
+                    🚗 {hasDistanceData ? `${totalKm.toFixed(1)} km` : '— km'}
+                  </span>
+                  <span>
+                    ⏱️ {totalMin > 0 ? `${totalMin} min` : '—'} of activities
+                  </span>
+                </div>
+              );
+            })()}
           </div>
         </div>
       </div>
