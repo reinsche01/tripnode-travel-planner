@@ -27,8 +27,8 @@
        │                   │                  │
        ▼                   ▼                  ▼
 ┌─────────────┐  ┌──────────────────┐  ┌───────────────┐
-│  Supabase   │  │  Google Places   │  │  OSRM Server  │
-│ (PostgreSQL)│  │  API             │  │  (Free Routing│
+│  Supabase   │  │   Geoapify API   │  │  OSRM Server  │
+│ (PostgreSQL)│  │ (Geocoding & POI)│  │  (Free Routing│
 │  + Auth     │  │  (Cached in DB)  │  │   Engine)     │
 └─────────────┘  └──────────────────┘  └───────────────┘
                           │
@@ -51,7 +51,7 @@ User Input (city, dates, hotel, anchors)
   Backend validates input
          │
          ▼
-  Google Places API → resolve coordinates + hours → Cache in Supabase
+  Geoapify API → resolve coordinates & address → Cache in Supabase
          │
          ▼
   Build Gemini prompt with:
@@ -114,7 +114,7 @@ itinerary_items
   id (uuid, PK)
   trip_day_id (uuid, FK → trip_days.id)
   trip_id (uuid, FK → trips.id)
-  place_id (text)              -- Google Places ID
+  place_id (text)              -- Geoapify / External Place ID
   name (text)
   type (enum: hotel|anchor|suggested)
   status (enum: locked|suggested)
@@ -197,8 +197,8 @@ Authorization: Bearer <supabase_jwt_token>
 | Backend | Node.js + Express.js | REST API server |
 | ORM/DB Client | @supabase/supabase-js | Database access |
 | Auth | Supabase Auth | JWT-based auth |
-| AI | Google Gemini 1.5 Flash | Structured itinerary generation |
-| Places | Google Places API | Place data + geocoding |
+| AI | Google Gemini 1.5/2.5 Flash | Structured itinerary generation |
+| Places | Geoapify Geocoding API | Place geocoding & coordinates (no credit card) |
 | Routing | OSRM (public) | Free distance matrix |
 | Database | Supabase (PostgreSQL) | Data persistence + caching |
 
@@ -217,7 +217,7 @@ Request for place data
    HIT       MISS
     │         │
     ▼         ▼
-  Return   Call Google Places API
+  Return   Call Geoapify API
   cached     │
   data       ▼
            Store result in places_cache

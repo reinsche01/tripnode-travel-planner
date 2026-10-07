@@ -126,7 +126,7 @@ Follow this order to build features incrementally:
 2. **Trip Creation Form** (city, dates, travelers, style)
 3. **Anchor Input** (hotel + must-visit places)
 4. **Gemini AI Gap-Fill** (LOCKED vs SUGGESTED slots)
-5. **Google Places Integration** (validation + photos)
+5. **Geoapify Integration** (geocoding + coordinates validation)
 6. **OSRM Route Optimization** (distance matrix)
 7. **Interactive Timeline** (drag-and-drop)
 8. **PDF Export**

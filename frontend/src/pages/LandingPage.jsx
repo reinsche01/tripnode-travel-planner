@@ -14,7 +14,7 @@ const features = [
   {
     icon: '⏰',
     title: 'Real-Time Availability Check',
-    desc: 'Every suggestion is validated against live opening hours via Google Places. No closed venue surprises.',
+    desc: 'Every suggestion is pinpointed and geocoded via Geoapify with smart OSRM routing. Accurate locations, no surprises.',
   },
 ];
 
@@ -52,7 +52,7 @@ export default function LandingPage() {
       <section className="section page-container text-center">
         <div className="max-w-3xl mx-auto animate-slide-up">
           <span className="badge-teal mb-6 inline-flex">
-            🌿 Powered by Gemini AI + Google Places
+            ✨ Powered by Gemini AI & Geoapify Maps
           </span>
           <h1 className="text-5xl md:text-6xl lg:text-7xl font-bold text-ink mb-6 leading-tight">
             Plan Smarter.<br />
@@ -217,7 +217,7 @@ export default function LandingPage() {
             <span className="text-xs text-ink-muted ml-2">© 2025</span>
           </div>
           <p className="text-xs text-ink-muted">
-            Built with ❤️ using Gemini AI, Google Places & OSRM
+            Built with ❤️ using Gemini AI, Geoapify & OSRM
           </p>
         </div>
       </footer>

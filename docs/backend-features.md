@@ -44,7 +44,7 @@ The backend is a **Node.js + Express.js** REST API server that acts as the brain
   }
   ```
 - **Flow:**
-  1. Geocode hotel address via Google Places API (or cache)
+  1. Geocode hotel address via Geoapify API (or cache)
   2. Create trip record in DB
   3. Create `trip_days` records for each day
   4. Return full trip object
@@ -83,7 +83,7 @@ The backend is a **Node.js + Express.js** REST API server that acts as the brain
   }
   ```
 - **Flow:**
-  1. Resolve place via Google Places or user-provided data
+  1. Resolve place via Geoapify or user-provided data
   2. Create item with `status: "locked"`, `type: "anchor"`
   3. Return updated day itinerary
 
@@ -107,8 +107,8 @@ The backend is a **Node.js + Express.js** REST API server that acts as the brain
      - Empty slots to fill
   4. Call Gemini API with `response_mime_type: "application/json"` for structured output
   5. Validate returned JSON against schema
-  6. For each suggested place: call Google Places API (with cache) for validation + photo
-  7. Check opening hours validity
+  6. For each suggested place: call Geoapify API (with cache) for geocoding & coordinates
+  7. Check opening hours validity (or default slot duration)
   8. Call OSRM for distance calculations between all items
   9. Save all suggested items to DB with `status: "suggested"`
   10. Return complete itinerary
@@ -154,25 +154,24 @@ TASK: Fill the empty time slots ONLY. Suggest nearby places within efficient rou
 
 ---
 
-## 5. Google Places Integration
+## 5. Geoapify Places & Geocoding Integration
 
 ### 5.1 Place Search & Resolution
 - **Endpoint:** `GET /api/places/search?query=&lat=&lng=`
 - **Flow:**
   1. Check `places_cache` table by name similarity
-  2. If cache miss → call Google Places Text Search API
-  3. Fetch Place Details (opening_hours, photo, rating)
+  2. If cache miss → call Geoapify Geocoding API (`api.geoapify.com/v1/geocode/search`)
+  3. Fetch Place details (coordinates, formatted address, category)
   4. Store in `places_cache` with 30-day TTL
-  5. Return normalized place object
+  5. Return normalized place object (lat, lng, address)
 
 ### 5.2 Place Autocomplete (Frontend)
 - **Endpoint:** `GET /api/places/autocomplete?input=&location=`
 - Used in hotel and anchor input forms
 - Results cached for 1 hour
 
-### 5.3 Photo URL Resolution
-- Google Places photos stored as references
-- Backend constructs full photo URL with API key
+### 5.3 Photo & Image Resolution
+- Suggested places use Unsplash / category placeholder imagery or photo URLs
 - Photo URL stored in cache (no re-fetching)
 
 ---
